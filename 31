@@ -1,0 +1,1824 @@
+--[[
+    vibeexploits | BEAR* (Alpha)
+    Fluent UI
+    Chams ESP (3D + 2D sprites), coin/candy/ghost farms, auto round,
+    free Halloween/skin quests, infinite stamina, speed, fly, fullbright, xray.
+    Only free rewards - no paid/coin/candy shop skins are touched.
+]]
+
+--==============================================================
+-- Services / executor
+--==============================================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ReplicatedFirst = game:GetService("ReplicatedFirst")
+local CollectionService = game:GetService("CollectionService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+local StarterGui = game:GetService("StarterGui")
+local Workspace = workspace
+local LocalPlayer = Players.LocalPlayer
+
+local FLUENT_URL = "https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"
+
+local getgenv = getgenv or function() return _G end
+local getconnections = getconnections or (syn and syn.getconnections) or nil
+local firetouch = firetouchinterest or (syn and syn.firetouchinterest) or nil
+local fireclick = fireclickdetector or (syn and syn.fireclickdetector) or nil
+local fireprompt = fireproximityprompt or (syn and syn.fireproximityprompt) or nil
+local loadstring = loadstring or load
+
+local function httpGet(url)
+    if type(game.HttpGet) == "function" then
+        local ok, res = pcall(function() return game:HttpGet(url, true) end)
+        if ok and type(res) == "string" and #res > 0 then return res end
+        ok, res = pcall(function() return game:HttpGet(url) end)
+        if ok and type(res) == "string" and #res > 0 then return res end
+    end
+    if type(request) == "function" then
+        local ok, res = pcall(function() return request({ Url = url, Method = "GET" }).Body end)
+        if ok and type(res) == "string" and #res > 0 then return res end
+    end
+    if type(http_request) == "function" then
+        local ok, res = pcall(function() return http_request({ Url = url, Method = "GET" }).Body end)
+        if ok and type(res) == "string" and #res > 0 then return res end
+    end
+    if type(syn) == "table" and type(syn.request) == "function" then
+        local ok, res = pcall(function() return syn.request({ Url = url, Method = "GET" }).Body end)
+        if ok and type(res) == "string" and #res > 0 then return res end
+    end
+    return nil
+end
+
+-- unload previous instance (vibeexploits, with legacy PotentHub cleanup)
+local old = getgenv().vibeexploits or getgenv().PotentHub
+if old and type(old) == "table" and type(old.Unload) == "function" then
+    pcall(old.Unload)
+end
+getgenv().vibeexploits = nil
+getgenv().PotentHub = nil
+
+local src = httpGet(FLUENT_URL)
+if not src then
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "vibeexploits",
+            Text = "Failed to download Fluent (HTTP unavailable).",
+            Duration = 6,
+        })
+    end)
+    return
+end
+
+local okFluent, Fluent = pcall(function() return loadstring(src)() end)
+if not okFluent or type(Fluent) ~= "table" then
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "vibeexploits",
+            Text = "Fluent failed to load.",
+            Duration = 6,
+        })
+    end)
+    return
+end
+
+--==============================================================
+-- Game data
+--==============================================================
+local PlayerRegistry
+pcall(function()
+    PlayerRegistry = require(ReplicatedFirst:WaitForChild("PlayerRegistry"))
+end)
+
+local Database = {}
+pcall(function()
+    Database = require(ReplicatedStorage.Share:WaitForChild("Database")) or {}
+end)
+
+local GameValues = ReplicatedStorage.Share:WaitForChild("GameValues")
+local Remotes = ReplicatedStorage:WaitForChild("_Remotes")
+
+--==============================================================
+-- State
+--==============================================================
+local Running = true
+local UI = {}
+
+local State = {
+    PlayerESP = false,
+    BearESP = false,
+    ItemESP = false,
+    Sprite2D = true,
+    ColorCodeItems = true,
+    PlayerColor = Color3.fromRGB(0, 170, 255),
+    BearColor = Color3.fromRGB(255, 45, 45),
+    ItemColor = Color3.fromRGB(255, 210, 70),
+    CoinFarm = false,
+    CandyFarm = false,
+    GhostFarm = false,
+    ScavFarm = false,
+    RoundFarm = false,
+    PotFarm = false,
+    InvisibleFarm = true,
+    MonsterScan = true,
+    ScanRadius = 45,
+    InfiniteStamina = false,
+    SpeedHack = false,
+    SpeedValue = 60,
+    Fly = false,
+    FlySpeed = 80,
+    Fullbright = false,
+    Xray = false,
+}
+
+local ItemColors = {
+    candy = Color3.fromRGB(255, 105, 180),
+    ghost = Color3.fromRGB(255, 80, 255),
+    danger = Color3.fromRGB(255, 45, 45),
+    skull = Color3.fromRGB(185, 130, 255),
+    cheese = Color3.fromRGB(255, 220, 60),
+    burger = Color3.fromRGB(255, 150, 80),
+    puzzle = Color3.fromRGB(80, 255, 120),
+    event = Color3.fromRGB(255, 140, 0),
+    chest = Color3.fromRGB(255, 200, 0),
+}
+
+-- farm counters (persist between toggles)
+local coinFarmed = 0
+local candyFarmed = 0
+local ghostFarmed = 0
+local scavFound = 0
+
+local unload -- forward declaration
+
+--==============================================================
+-- Helpers
+--==============================================================
+local function getChar(plr)
+    return plr and plr.Character
+end
+
+local function getHum(char)
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function getRoot(char)
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function isAlive(char)
+    local hum = getHum(char)
+    return hum ~= nil and hum.Health > 0
+end
+
+local function isBear(plr)
+    return plr ~= nil and plr.Team ~= nil and plr.Team.Name == "Bear"
+end
+
+local function isSurvivor(plr)
+    return plr ~= nil and plr.Team ~= nil and plr.Team.Name == "Survivors"
+end
+
+local function playerRoot()
+    return getRoot(LocalPlayer.Character)
+end
+
+local function playerHum()
+    return getHum(LocalPlayer.Character)
+end
+
+local function gameState()
+    local ok, value = pcall(function() return GameValues.State.Value end)
+    return ok and value or 0
+end
+
+local function currency(field)
+    if not PlayerRegistry then return 0 end
+    local ok, value = pcall(function() return PlayerRegistry.PlayerData[field] end)
+    return ok and tonumber(value) or 0
+end
+
+local function potData()
+    if not PlayerRegistry then return nil end
+    local ok, value = pcall(function()
+        return PlayerRegistry.PlayerData.CommunityPots and PlayerRegistry.PlayerData.CommunityPots.Hallow26
+    end)
+    return ok and value or nil
+end
+
+local function setStatus(para, text)
+    if para then
+        pcall(function() para:SetDesc(text) end)
+    end
+end
+
+local function teleportTo(pos)
+    local root = playerRoot()
+    local hum = playerHum()
+    if not root or not hum or hum.Health <= 0 then return false end
+    if typeof(pos) == "CFrame" then
+        pcall(function() root.CFrame = pos end)
+    else
+        pcall(function() root.CFrame = CFrame.new(pos) end)
+    end
+    return true
+end
+
+local function waitForField(field, before, timeout)
+    local deadline = os.clock() + (timeout or 0.7)
+    local value = before
+    while os.clock() < deadline do
+        task.wait(0.1)
+        value = currency(field)
+        if value > before then return value end
+    end
+    return value
+end
+
+local function notify(title, content, duration)
+    pcall(function()
+        Fluent:Notify({ Title = title, Content = content, Duration = duration or 4 })
+    end)
+end
+
+--==============================================================
+-- Safety: hostile scan / panic escape
+--==============================================================
+local panicUntil = 0
+local hostileCache = {}
+local hostileScanAt = 0
+local lastHealth = nil
+
+local dangerWords = {
+    "monster", "enemy", "hostile", "killer", "horror", "demon", "nightmare",
+    "huggy", "wuggy", "siren", "smiler", "smil", "freddy", "chica", "bonnie",
+    "foxy", "springtrap", "puppet", "marionette", "slender", "jason", "michael",
+    "myers", "chucky", "pennywise", "baldi", "sonic", "exe", "jeff", "granny",
+    "oni", "nemesis", "pyramid", "jigsaw", "annabelle", "momo", "wendigo",
+    "skinwalker", "rake", "goatman", "jumpscare", "scarecrow", "hazard", "hitbox",
+    "hurtbox", "killbrick", "spike", "trap",
+}
+
+local function nameLooksHostile(name)
+    local n = string.lower(name)
+    for _, w in ipairs(dangerWords) do
+        if string.find(n, w, 1, true) then return true end
+    end
+    return false
+end
+
+local function isPinkGhost(inst)
+    return inst ~= nil and string.find(string.lower(inst.Name), "pink", 1, true) ~= nil
+end
+
+local function isCandyGhost(inst)
+    local n = string.lower(inst.Name)
+    return string.find(n, "pink", 1, true) ~= nil or string.find(n, "candy", 1, true) ~= nil
+end
+
+local function instancePos(inst)
+    if inst:IsA("Model") then
+        local ok, pivot = pcall(function() return inst:GetPivot() end)
+        return ok and pivot.Position or nil
+    elseif inst:IsA("BasePart") then
+        return inst.Position
+    end
+    return nil
+end
+
+local function refreshHostiles()
+    local now = os.clock()
+    if now - hostileScanAt < 1 then return end
+    hostileScanAt = now
+    table.clear(hostileCache)
+    local seen = {}
+    local map = Workspace:FindFirstChild("Map")
+
+    local function addHostile(inst)
+        if not inst or seen[inst] or inst == LocalPlayer.Character then return end
+        seen[inst] = true
+        table.insert(hostileCache, inst)
+    end
+
+    local function consider(inst)
+        if not inst or seen[inst] or inst == LocalPlayer.Character then return end
+        if inst:IsA("Model") and Players:GetPlayerFromCharacter(inst) then return end
+        local hostile = false
+        if inst:IsA("Model") and inst:FindFirstChildOfClass("Humanoid") then
+            hostile = true
+        end
+        if not hostile and nameLooksHostile(inst.Name) then
+            hostile = true
+        end
+        if hostile then addHostile(inst) end
+    end
+
+    for _, tag in ipairs({ "_MandemStatue", "_Monster", "Monster", "_Enemy", "_Killer" }) do
+        for _, inst in ipairs(CollectionService:GetTagged(tag)) do
+            if inst:IsDescendantOf(Workspace) then
+                if map or tag ~= "_MandemStatue" then addHostile(inst) end
+            end
+        end
+    end
+
+    if map then
+        for _, inst in ipairs(map:GetDescendants()) do
+            if inst:IsA("Model") or inst:IsA("BasePart") then consider(inst) end
+        end
+        for _, inst in ipairs(Workspace:GetChildren()) do
+            if inst:IsA("Model") and not Players:GetPlayerFromCharacter(inst) then
+                consider(inst)
+            end
+        end
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and isBear(plr) and isAlive(plr.Character) then
+                addHostile(plr.Character)
+            end
+        end
+    end
+
+    for _, ghost in ipairs(CollectionService:GetTagged("OBJ_Ghost")) do
+        if ghost.Parent and not isCandyGhost(ghost) then addHostile(ghost) end
+    end
+end
+
+local function hostileNear(pos, radius)
+    if not State.MonsterScan or not pos then return nil end
+    refreshHostiles()
+    for _, inst in ipairs(hostileCache) do
+        if inst.Parent then
+            local p = instancePos(inst)
+            if p and (p - pos).Magnitude <= radius then return inst end
+        end
+    end
+    return nil
+end
+
+local function panicEscape()
+    local now = os.clock()
+    if now < panicUntil then return false end
+    panicUntil = now + 2.5
+    local root = playerRoot()
+    if not root then return false end
+    pcall(function()
+        root.CFrame = root.CFrame + Vector3.new(0, 100, 0)
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        root.Anchored = true
+    end)
+    task.delay(1.5, function()
+        if root and root.Parent then
+            pcall(function() root.Anchored = false end)
+        end
+    end)
+    return true
+end
+
+local function safeTeleport(pos, radius, checkAfter)
+    if os.clock() < panicUntil then return false end
+    radius = radius or State.ScanRadius
+    if hostileNear(pos, radius) then return false end
+    if not teleportTo(pos) then return false end
+    if checkAfter ~= false then
+        task.wait(0.05)
+        local root = playerRoot()
+        if root and hostileNear(root.Position, math.min(radius, 28)) then
+            panicEscape()
+            return false
+        end
+    end
+    return true
+end
+
+--==============================================================
+-- ESP (chams only)
+--==============================================================
+local espPlayer = {}
+local espItem = {}
+
+local function destroyEntry(entry)
+    if not entry then return end
+    if entry.highlight then
+        pcall(function() entry.highlight:Destroy() end)
+        entry.highlight = nil
+    end
+    if entry.clones then
+        for _, pair in ipairs(entry.clones) do
+            if pair.gui then pcall(function() pair.gui:Destroy() end) end
+        end
+        table.clear(entry.clones)
+    end
+end
+
+local function ensureHighlight(entry, adornee, color)
+    if not adornee or not adornee.Parent then return end
+    if not adornee:IsA("BasePart") and not adornee:IsA("Model") then return end
+    local hl = entry.highlight
+    if not hl or hl.Parent == nil then
+        hl = Instance.new("Highlight")
+        hl.Name = "PH_Highlight"
+        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        hl.FillTransparency = 0.5
+        hl.OutlineTransparency = 0.35
+        hl.Adornee = adornee
+        hl.Parent = adornee
+        entry.highlight = hl
+    end
+    hl.FillColor = color
+    hl.OutlineColor = color
+end
+
+local function findSkinBillboards(char)
+    local list = {}
+    local skinTag = CollectionService:HasTag(char, "SkinAnim")
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BillboardGui") and d.Enabled and not string.find(d.Name, "PH_", 1, true) then
+            local imgs = {}
+            for _, im in ipairs(d:GetDescendants()) do
+                if im:IsA("ImageLabel") and im.Image ~= "" then
+                    table.insert(imgs, im)
+                end
+            end
+            local is2D = false
+            if #imgs >= 1 then
+                local n = string.lower(imgs[1].Name)
+                if string.find(n, "idle", 1, true) or string.find(n, "walk", 1, true) or string.find(n, "skin", 1, true) then
+                    is2D = true
+                end
+            end
+            if not is2D and skinTag and #imgs >= 1 then
+                is2D = true
+            end
+            if is2D then table.insert(list, d) end
+        end
+    end
+    return list
+end
+
+local function findAnyBillboards(inst)
+    local list = {}
+    for _, d in ipairs(inst:GetDescendants()) do
+        if d:IsA("BillboardGui") and d.Enabled and not string.find(d.Name, "PH_", 1, true) then
+            local has = false
+            for _, im in ipairs(d:GetDescendants()) do
+                if im:IsA("ImageLabel") and im.Image ~= "" then has = true; break end
+            end
+            if has then table.insert(list, d) end
+        end
+    end
+    return list
+end
+
+local function makeChamClone(bb, color)
+    if not bb.Parent then return nil end
+    local ok, clone = pcall(function() return bb:Clone() end)
+    if not ok or not clone then return nil end
+    clone.Name = "PH_2DCham"
+    clone.AlwaysOnTop = true
+    clone.MaxDistance = math.huge
+    clone.Enabled = true
+    for _, im in ipairs(clone:GetDescendants()) do
+        if im:IsA("ImageLabel") then
+            im.ImageColor3 = color
+            im.ImageTransparency = 0.12
+            im.BackgroundTransparency = 1
+            im.ZIndex = (im.ZIndex or 1) + 10
+        elseif im:IsA("TextLabel") or im:IsA("TextButton") then
+            im.Visible = false
+        end
+    end
+    clone.Parent = bb.Parent
+    return clone
+end
+
+local function syncChamClone(gui, orig, color)
+    for _, im in ipairs(gui:GetDescendants()) do
+        if im:IsA("ImageLabel") then
+            local o = orig:FindFirstChild(im.Name, true)
+            if o and o:IsA("ImageLabel") then
+                im.Visible = o.Visible
+                im.Image = o.Image
+                im.ImageColor3 = color
+                im.ImageTransparency = math.clamp(o.ImageTransparency, 0.05, 0.85)
+                im.BackgroundTransparency = 1
+                im.ZIndex = (o.ZIndex or 1) + 10
+            end
+        elseif im:IsA("TextLabel") or im:IsA("TextButton") then
+            im.Visible = false
+        end
+    end
+end
+
+local function syncCloneList(entry, originals, color)
+    local existing = {}
+    for _, pair in ipairs(entry.clones) do
+        existing[pair.orig] = pair
+    end
+    for _, bb in ipairs(originals) do
+        if not existing[bb] then
+            local gui = makeChamClone(bb, color)
+            if gui then
+                local pair = { gui = gui, orig = bb }
+                table.insert(entry.clones, pair)
+                existing[bb] = pair
+            end
+        end
+    end
+    local wanted = {}
+    for _, bb in ipairs(originals) do wanted[bb] = true end
+    for i = #entry.clones, 1, -1 do
+        local pair = entry.clones[i]
+        if not wanted[pair.orig] or not pair.gui.Parent or not pair.orig.Parent or not pair.orig.Enabled then
+            if pair.gui then pcall(function() pair.gui:Destroy() end) end
+            table.remove(entry.clones, i)
+        else
+            syncChamClone(pair.gui, pair.orig, color)
+        end
+    end
+end
+
+local function updatePlayerESP()
+    local targets = {}
+    if State.PlayerESP then
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and not isBear(plr) then
+                local char = getChar(plr)
+                if char and isAlive(char) then targets[char] = State.PlayerColor end
+            end
+        end
+    end
+    if State.BearESP then
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and isBear(plr) then
+                local char = getChar(plr)
+                if char and isAlive(char) then targets[char] = State.BearColor end
+            end
+        end
+    end
+    for char, entry in pairs(espPlayer) do
+        if not targets[char] or not char.Parent or not isAlive(char) then
+            destroyEntry(entry)
+            espPlayer[char] = nil
+        end
+    end
+    for char, color in pairs(targets) do
+        local entry = espPlayer[char]
+        if not entry then
+            entry = { clones = {} }
+            espPlayer[char] = entry
+        end
+        ensureHighlight(entry, char, color)
+        if State.Sprite2D then
+            syncCloneList(entry, findSkinBillboards(char), color)
+        else
+            for _, pair in ipairs(entry.clones) do
+                if pair.gui then pcall(function() pair.gui:Destroy() end) end
+            end
+            table.clear(entry.clones)
+        end
+    end
+end
+
+local nameTargets = {}
+local nameScanAt = 0
+
+local function refreshNameTargets()
+    local now = os.clock()
+    if now - nameScanAt < 2 then return end
+    nameScanAt = now
+    table.clear(nameTargets)
+    local map = Workspace:FindFirstChild("Map")
+    if not map then return end
+    for _, d in ipairs(map:GetDescendants()) do
+        if d:IsA("BasePart") or d:IsA("Model") or d:IsA("Tool") then
+            local n = string.lower(d.Name)
+            if string.find(n, "cheese", 1, true) then
+                nameTargets[d] = "cheese"
+            elseif string.find(n, "burger", 1, true) then
+                nameTargets[d] = "burger"
+            elseif n == "generator" then
+                nameTargets[d] = "puzzle"
+            end
+        end
+    end
+end
+
+local function updateItemESP()
+    local targets = {}
+    local function add(inst, color, sprite)
+        if inst and inst.Parent and not targets[inst] then
+            targets[inst] = { color = color, sprite = sprite }
+        end
+    end
+    if State.ItemESP then
+        for _, d in ipairs(CollectionService:GetTagged("OBJ_Collectable")) do
+            add(d, State.ColorCodeItems and ItemColors.candy or State.ItemColor, false)
+        end
+        for _, d in ipairs(CollectionService:GetTagged("OBJ_Ghost")) do
+            local color = State.ItemColor
+            if State.ColorCodeItems then
+                color = isCandyGhost(d) and ItemColors.ghost or ItemColors.danger
+            end
+            add(d, color, true)
+        end
+        for _, d in ipairs(CollectionService:GetTagged("_ScavengerHuntItem")) do
+            add(d, State.ColorCodeItems and ItemColors.skull or State.ItemColor, false)
+        end
+        for _, d in ipairs(CollectionService:GetTagged("_RBLXHalloweenCollect")) do
+            add(d, State.ColorCodeItems and ItemColors.event or State.ItemColor, false)
+        end
+        for _, d in ipairs(CollectionService:GetTagged("_HallowBearPlushCollectRender")) do
+            add(d, State.ColorCodeItems and ItemColors.event or State.ItemColor, false)
+        end
+        for _, d in ipairs(CollectionService:GetTagged("TreasureChest")) do
+            add(d, State.ColorCodeItems and ItemColors.chest or State.ItemColor, false)
+        end
+        for _, d in ipairs(CollectionService:GetTagged("_PuzzleSpawner")) do
+            add(d, State.ColorCodeItems and ItemColors.puzzle or State.ItemColor, false)
+        end
+        for _, d in ipairs(CollectionService:GetTagged("_SurvivorInteractable")) do
+            local parent = d:IsA("ClickDetector") and d.Parent or d
+            add(parent, State.ColorCodeItems and ItemColors.puzzle or State.ItemColor, false)
+        end
+        refreshNameTargets()
+        for inst, kind in pairs(nameTargets) do
+            local color = State.ItemColor
+            if State.ColorCodeItems then color = ItemColors[kind] or State.ItemColor end
+            add(inst, color, false)
+        end
+    end
+    for inst, entry in pairs(espItem) do
+        if not targets[inst] or not inst.Parent then
+            destroyEntry(entry)
+            espItem[inst] = nil
+        end
+    end
+    for inst, data in pairs(targets) do
+        local entry = espItem[inst]
+        if not entry then
+            entry = { clones = {} }
+            espItem[inst] = entry
+        end
+        local adornee = inst
+        if inst:IsA("Tool") then adornee = inst:FindFirstChild("Handle") end
+        if adornee then ensureHighlight(entry, adornee, data.color) end
+        if data.sprite and State.Sprite2D then
+            syncCloneList(entry, findAnyBillboards(inst), data.color)
+        else
+            for _, pair in ipairs(entry.clones) do
+                if pair.gui then pcall(function() pair.gui:Destroy() end) end
+            end
+            table.clear(entry.clones)
+        end
+    end
+end
+
+--==============================================================
+-- Invisibility / farm return
+--==============================================================
+local invisSaved = {}
+
+local function applyInvisibility()
+    local char = LocalPlayer.Character
+    if not char then return end
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") then
+            if invisSaved[d] == nil then
+                invisSaved[d] = { t = d.Transparency, l = d.LocalTransparencyModifier }
+            end
+            d.Transparency = 1
+            d.LocalTransparencyModifier = 1
+        elseif d:IsA("Decal") or d:IsA("Texture") then
+            if invisSaved[d] == nil then invisSaved[d] = { t = d.Transparency } end
+            d.Transparency = 1
+        elseif d:IsA("BillboardGui") then
+            if invisSaved[d] == nil then invisSaved[d] = { e = d.Enabled } end
+            d.Enabled = false
+        end
+    end
+end
+
+local function restoreInvisibility()
+    for d, s in pairs(invisSaved) do
+        if d and d.Parent then
+            pcall(function()
+                if d:IsA("BasePart") then
+                    d.Transparency = s.t
+                    d.LocalTransparencyModifier = s.l
+                elseif d:IsA("Decal") or d:IsA("Texture") then
+                    d.Transparency = s.t
+                elseif d:IsA("BillboardGui") then
+                    d.Enabled = s.e
+                end
+            end)
+        end
+    end
+    table.clear(invisSaved)
+end
+
+local function farmingActive()
+    if not State.InvisibleFarm then return false end
+    return State.CoinFarm or State.CandyFarm or State.GhostFarm or State.ScavFarm or State.RoundFarm
+end
+
+RunService.RenderStepped:Connect(function()
+    if not Running then return end
+    if farmingActive() then
+        applyInvisibility()
+    elseif next(invisSaved) ~= nil then
+        restoreInvisibility()
+    end
+end)
+
+local farmReturn = nil
+
+local function anyFarmOn()
+    return State.CoinFarm or State.CandyFarm or State.GhostFarm or State.ScavFarm or State.RoundFarm
+end
+
+local function onFarmStateChanged()
+    if anyFarmOn() then
+        if not farmReturn then
+            local root = playerRoot()
+            if root then farmReturn = root.CFrame end
+        end
+    elseif farmReturn then
+        local root = playerRoot()
+        local hum = playerHum()
+        if root and hum and hum.Health > 0 then
+            pcall(function() root.CFrame = farmReturn end)
+        end
+        farmReturn = nil
+    end
+end
+
+-- health guard: if a monster hits us, jump out and hover briefly
+task.spawn(function()
+    while Running do
+        if anyFarmOn() then
+            local hum = playerHum()
+            if hum then
+                if lastHealth == nil then
+                    lastHealth = hum.Health
+                elseif hum.Health < lastHealth - 3 and os.clock() >= panicUntil then
+                    panicEscape()
+                end
+                lastHealth = hum.Health
+            else
+                lastHealth = nil
+            end
+        else
+            lastHealth = nil
+        end
+        task.wait(0.15)
+    end
+end)
+
+--==============================================================
+-- World: fullbright / xray
+--==============================================================
+local fbSaved = nil
+
+local function setFullbright(on)
+    if on then
+        if not fbSaved then
+            fbSaved = { props = {}, effects = {} }
+            for _, key in ipairs({
+                "Brightness", "Ambient", "OutdoorAmbient", "ClockTime", "FogEnd", "FogStart",
+                "GlobalShadows", "ExposureCompensation", "EnvironmentDiffuseScale", "EnvironmentSpecularScale",
+            }) do
+                fbSaved.props[key] = Lighting[key]
+            end
+            for _, e in ipairs(Lighting:GetChildren()) do
+                if e:IsA("PostEffect") or e:IsA("Atmosphere") then
+                    fbSaved.effects[e] = e.Enabled
+                    e.Enabled = false
+                end
+            end
+        end
+        Lighting.Brightness = 2
+        Lighting.Ambient = Color3.new(1, 1, 1)
+        Lighting.OutdoorAmbient = Color3.new(1, 1, 1)
+        Lighting.ClockTime = 12
+        Lighting.FogEnd = 1e6
+        Lighting.FogStart = 1e6
+        Lighting.GlobalShadows = false
+        Lighting.ExposureCompensation = 0
+        Lighting.EnvironmentDiffuseScale = 1
+        Lighting.EnvironmentSpecularScale = 1
+        for _, e in ipairs(Lighting:GetChildren()) do
+            if e:IsA("PostEffect") or e:IsA("Atmosphere") then
+                if fbSaved.effects[e] == nil then fbSaved.effects[e] = e.Enabled end
+                e.Enabled = false
+            end
+        end
+    elseif fbSaved then
+        for key, value in pairs(fbSaved.props) do
+            pcall(function() Lighting[key] = value end)
+        end
+        for e, enabled in pairs(fbSaved.effects) do
+            if e and e.Parent then pcall(function() e.Enabled = enabled end) end
+        end
+        fbSaved = nil
+    end
+end
+
+local xraySaved = {}
+
+local function setXray(on)
+    if on then
+        for _, root in ipairs({ Workspace:FindFirstChild("Map"), Workspace:FindFirstChild("Lobby") }) do
+            if root then
+                for _, d in ipairs(root:GetDescendants()) do
+                    if d:IsA("BasePart") and d.Transparency < 1 then
+                        if xraySaved[d] == nil then
+                            xraySaved[d] = d.LocalTransparencyModifier
+                        end
+                        d.LocalTransparencyModifier = 0.65
+                    end
+                end
+            end
+        end
+    else
+        for d, value in pairs(xraySaved) do
+            if d and d.Parent then
+                pcall(function() d.LocalTransparencyModifier = value end)
+            end
+        end
+        table.clear(xraySaved)
+    end
+end
+
+--==============================================================
+-- Player: speed / fly / stamina
+--==============================================================
+local speedHumanoid = nil
+local speedConns = {}
+local speedBv = nil
+local speedWasOn = false
+
+local function restoreSpeedConnections()
+    for _, c in ipairs(speedConns) do
+        pcall(function() c:Enable() end)
+        pcall(function() c.Enabled = true end)
+    end
+    table.clear(speedConns)
+end
+
+local function applySpeed()
+    if State.SpeedHack then
+        speedWasOn = true
+        local hum = playerHum()
+        if not hum then return end
+        if getconnections then
+            if speedHumanoid ~= hum then
+                restoreSpeedConnections()
+                speedHumanoid = hum
+                local conns = getconnections(hum:GetPropertyChangedSignal("WalkSpeed"))
+                for _, c in ipairs(conns) do
+                    pcall(function() c:Disable() end)
+                    pcall(function() c.Enabled = false end)
+                    table.insert(speedConns, c)
+                end
+            end
+            hum.WalkSpeed = State.SpeedValue
+        else
+            local root = playerRoot()
+            if root then
+                if not speedBv or speedBv.Parent ~= root then
+                    if speedBv then pcall(function() speedBv:Destroy() end) end
+                    speedBv = Instance.new("BodyVelocity")
+                    speedBv.Name = "PH_Speed"
+                    speedBv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+                    speedBv.Parent = root
+                end
+                speedBv.Velocity = hum.MoveDirection * State.SpeedValue
+            end
+        end
+    elseif speedWasOn then
+        speedWasOn = false
+        restoreSpeedConnections()
+        if speedBv then
+            pcall(function() speedBv:Destroy() end)
+            speedBv = nil
+        end
+        local current = playerHum()
+        if current then
+            pcall(function() current.WalkSpeed = 16 end)
+        end
+        speedHumanoid = nil
+    end
+end
+
+RunService:BindToRenderStep("PH_Speed", 1000, applySpeed)
+
+local flyConn = nil
+local flyHumanoid = nil
+
+local function stopFly()
+    if flyConn then
+        pcall(function() flyConn:Disconnect() end)
+        flyConn = nil
+    end
+    local current = playerHum()
+    if current then
+        pcall(function() current.PlatformStand = false end)
+    end
+    if flyHumanoid and flyHumanoid ~= current then
+        pcall(function() flyHumanoid.PlatformStand = false end)
+    end
+    flyHumanoid = nil
+    local root = playerRoot()
+    if root then
+        pcall(function()
+            root.Anchored = false
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
+end
+
+local function startFly()
+    stopFly()
+    local root = playerRoot()
+    local hum = playerHum()
+    if not root or not hum or hum.Health <= 0 then return end
+    flyHumanoid = hum
+    hum.PlatformStand = true
+    flyConn = RunService.RenderStepped:Connect(function(dt)
+        if not Running or not State.Fly then return end
+        local currentHum = playerHum()
+        local currentRoot = playerRoot()
+        if not currentHum or not currentRoot or currentHum.Health <= 0 then return end
+        currentHum.PlatformStand = true
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
+        local dir = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir -= cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0, 1, 0) end
+        if dir.Magnitude > 0 then dir = dir.Unit end
+        local move = dir * State.FlySpeed * math.min(dt, 0.15)
+        currentRoot.Anchored = true
+        currentRoot.CFrame = currentRoot.CFrame + move
+        currentRoot.AssemblyLinearVelocity = Vector3.zero
+        currentRoot.AssemblyAngularVelocity = Vector3.zero
+    end)
+end
+
+--==============================================================
+-- Skins / quests
+--==============================================================
+local activeHunt = nil
+
+local function getActiveHunt()
+    if activeHunt then return activeHunt end
+    local db = Database and Database.ScavengerHunts
+    if db then
+        for key, data in pairs(db) do
+            if data.IsActive then
+                activeHunt = key
+                return key
+            end
+        end
+    end
+    return nil
+end
+
+local function claimR26()
+    local flags = PlayerRegistry and PlayerRegistry.PlayerData and PlayerRegistry.PlayerData.GameFlags
+    if flags and flags.Hallow26Sleep then
+        notify("R26 Event", "Already claimed (Hallow26Sleep = true).", 4)
+        return
+    end
+    local rf = Remotes:FindFirstChild("RF/RBLXHallow26Visit")
+    if not rf then
+        notify("R26 Event", "Remote not found.", 4)
+        return
+    end
+    local ok, res = pcall(function() return rf:InvokeServer() end)
+    notify("R26 Event", ok and ("Result: " .. tostring(res)) or "Invoke failed.", 5)
+end
+
+--==============================================================
+-- UI
+--==============================================================
+local Window = Fluent:CreateWindow({
+    Title = "vibeexploits",
+    SubTitle = "BEAR* | Alpha",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(620, 480),
+    Acrylic = true,
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.RightControl,
+})
+
+local Tabs = {
+    Visuals = Window:AddTab({ Title = "Visuals", Icon = "eye" }),
+    Autofarm = Window:AddTab({ Title = "Autofarm", Icon = "coins" }),
+    Skins = Window:AddTab({ Title = "Skins", Icon = "gift" }),
+    Player = Window:AddTab({ Title = "Player", Icon = "user" }),
+    World = Window:AddTab({ Title = "World", Icon = "globe" }),
+    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" }),
+}
+
+-- Visuals
+local visPlayer = Tabs.Visuals:AddSection("Player ESP")
+visPlayer:AddToggle("PlayerESP", {
+    Title = "Player Chams",
+    Default = false,
+    Callback = function(v) State.PlayerESP = v end,
+})
+local playerColor = visPlayer:AddColorpicker("PlayerColor", {
+    Title = "Player Color",
+    Default = State.PlayerColor,
+})
+playerColor:OnChanged(function() State.PlayerColor = playerColor.Value end)
+
+local visBear = Tabs.Visuals:AddSection("Bear ESP")
+visBear:AddToggle("BearESP", {
+    Title = "Bear Chams",
+    Default = false,
+    Callback = function(v) State.BearESP = v end,
+})
+local bearColor = visBear:AddColorpicker("BearColor", {
+    Title = "Bear Color",
+    Default = State.BearColor,
+})
+bearColor:OnChanged(function() State.BearColor = bearColor.Value end)
+visBear:AddToggle("Sprite2D", {
+    Title = "2D Sprite Chams",
+    Default = true,
+    Callback = function(v) State.Sprite2D = v end,
+})
+
+local visItem = Tabs.Visuals:AddSection("Item ESP")
+visItem:AddToggle("ItemESP", {
+    Title = "Item Chams",
+    Default = false,
+    Callback = function(v) State.ItemESP = v end,
+})
+local itemColor = visItem:AddColorpicker("ItemColor", {
+    Title = "Item Color",
+    Default = State.ItemColor,
+})
+itemColor:OnChanged(function() State.ItemColor = itemColor.Value end)
+visItem:AddToggle("ColorCodeItems", {
+    Title = "Color-Code Items",
+    Default = true,
+    Callback = function(v) State.ColorCodeItems = v end,
+})
+visItem:AddParagraph({
+    Title = "Legend",
+    Content = "Pink Candy | Magenta Candy Ghost | Red Harmful Ghost | Purple Skull | Yellow Cheese | Green Puzzle | Orange Event | Gold Chest",
+})
+UI.espStatus = Tabs.Visuals:AddParagraph({ Title = "ESP Status", Content = "Idle" })
+
+-- Autofarm
+local autoCoin = Tabs.Autofarm:AddSection("Lobby")
+autoCoin:AddToggle("CoinFarm", {
+    Title = "Auto Coin Case (+5 Quidz)",
+    Description = "Farms the lobby chest; keeps running if you die and respawn in the lobby during a round.",
+    Default = false,
+    Callback = function(v)
+        State.CoinFarm = v
+        onFarmStateChanged()
+    end,
+})
+UI.coin = autoCoin:AddParagraph({ Title = "Coin Case", Content = "Idle" })
+
+local autoCandy = Tabs.Autofarm:AddSection("Candy")
+autoCandy:AddToggle("CandyFarm", {
+    Title = "Auto Candy (Map)",
+    Default = false,
+    Callback = function(v)
+        State.CandyFarm = v
+        onFarmStateChanged()
+    end,
+})
+UI.candy = autoCandy:AddParagraph({ Title = "Candy", Content = "Idle" })
+autoCandy:AddToggle("GhostFarm", {
+    Title = "Auto Pink Candy Ghosts",
+    Description = "Only targets the Pink/Candy ghosts. Red, Blue and Green ghosts are harmful and never targeted.",
+    Default = false,
+    Callback = function(v)
+        State.GhostFarm = v
+        onFarmStateChanged()
+    end,
+})
+UI.ghost = autoCandy:AddParagraph({ Title = "Ghosts", Content = "Idle" })
+autoCandy:AddParagraph({
+    Title = "Safe Target",
+    Content = "Pink = candy ghost. Any other ghost is harmful; it is colored red by Item ESP and skipped.",
+})
+
+local autoRound = Tabs.Autofarm:AddSection("Round")
+autoRound:AddToggle("RoundFarm", {
+    Title = "Auto Round (Survivor)",
+    Default = false,
+    Callback = function(v)
+        State.RoundFarm = v
+        onFarmStateChanged()
+    end,
+})
+UI.round = autoRound:AddParagraph({ Title = "Round", Content = "Idle" })
+autoRound:AddParagraph({
+    Title = "Note",
+    Content = "Best-effort: clicks all puzzle buttons, touches objectives and grabs cheese. Wire/ColorCode may still need you.",
+})
+
+local autoSafety = Tabs.Autofarm:AddSection("Safety")
+autoSafety:AddToggle("MonsterScan", {
+    Title = "Avoid Monsters / NPCs (Scan)",
+    Description = "Scans around every teleport target for NPC rigs, _MandemStatue models, horror-named monsters and harmful ghosts.",
+    Default = true,
+    Callback = function(v) State.MonsterScan = v end,
+})
+autoSafety:AddSlider("ScanRadius", {
+    Title = "Scan Radius",
+    Default = 45,
+    Min = 15,
+    Max = 90,
+    Rounding = 0,
+    Callback = function(v) State.ScanRadius = v end,
+})
+autoSafety:AddParagraph({
+    Title = "Panic Escape",
+    Content = "If your health drops while farming, you jump 100 studs up, hover briefly and skip targets until safe. This stays on even if the scan is off.",
+})
+autoSafety:AddParagraph({
+    Title = "Notes",
+    Content = "The scan is conservative: a target near a detected hostile is skipped rather than risking a hit.",
+})
+
+-- Skins
+local skinScav = Tabs.Skins:AddSection("The Riddling Skavenge")
+skinScav:AddParagraph({ Title = "Reward", Content = "Skelebear skin + Burial kill effect" })
+skinScav:AddToggle("ScavFarm", {
+    Title = "Auto Collect Skulls",
+    Default = false,
+    Callback = function(v)
+        State.ScavFarm = v
+        onFarmStateChanged()
+    end,
+})
+UI.scav = skinScav:AddParagraph({ Title = "Progress", Content = "Idle" })
+skinScav:AddParagraph({
+    Title = "Safety",
+    Content = "Only teleports to skulls that exist in your current map (or lobby). Never touches absent skulls.",
+})
+
+local skinPot = Tabs.Skins:AddSection("Community Pot (Hallow26)")
+skinPot:AddParagraph({ Title = "Reward", Content = "VintageCat skin at 5,000 donated candy" })
+skinPot:AddToggle("PotFarm", {
+    Title = "Auto Donate & Redeem",
+    Default = false,
+    Callback = function(v) State.PotFarm = v end,
+})
+UI.pot = skinPot:AddParagraph({ Title = "Pot", Content = "Idle" })
+
+local skinEvent = Tabs.Skins:AddSection("Event Items")
+skinEvent:AddButton({
+    Title = "Claim R26 Plush",
+    Description = "Free Roblox Halloween 2026 event item (if not claimed)",
+    Callback = function() claimR26() end,
+})
+skinEvent:AddParagraph({
+    Title = "Note",
+    Content = "Only free/unlockable-by-play rewards. No paid skins or candy/coin shop items.",
+})
+
+-- Player
+local playerMove = Tabs.Player:AddSection("Movement")
+playerMove:AddToggle("SpeedHack", {
+    Title = "Speed Hack",
+    Default = false,
+    Callback = function(v) State.SpeedHack = v end,
+})
+playerMove:AddSlider("SpeedValue", {
+    Title = "Speed",
+    Default = 60,
+    Min = 16,
+    Max = 250,
+    Rounding = 0,
+    Callback = function(v) State.SpeedValue = v end,
+})
+playerMove:AddToggle("Fly", {
+    Title = "Fly",
+    Default = false,
+    Callback = function(v) State.Fly = v end,
+})
+playerMove:AddSlider("FlySpeed", {
+    Title = "Fly Speed",
+    Default = 80,
+    Min = 20,
+    Max = 250,
+    Rounding = 0,
+    Callback = function(v) State.FlySpeed = v end,
+})
+playerMove:AddParagraph({ Title = "Fly Controls", Content = "WASD | Space = up | LeftControl = down" })
+
+local playerStam = Tabs.Player:AddSection("Stamina")
+playerStam:AddToggle("InfiniteStamina", {
+    Title = "Infinite Stamina",
+    Default = false,
+    Callback = function(v) State.InfiniteStamina = v end,
+})
+
+local playerFarm = Tabs.Player:AddSection("Farming")
+playerFarm:AddToggle("InvisibleFarm", {
+    Title = "Invisible While Farming",
+    Default = true,
+    Callback = function(v) State.InvisibleFarm = v end,
+})
+playerFarm:AddParagraph({
+    Title = "Info",
+    Content = "Hides your character while any autofarm is active. Restores when you stop.",
+})
+
+-- World
+local worldLight = Tabs.World:AddSection("Lighting")
+worldLight:AddToggle("Fullbright", {
+    Title = "Fullbright",
+    Default = false,
+    Callback = function(v)
+        State.Fullbright = v
+        if not v then setFullbright(false) end
+    end,
+})
+worldLight:AddToggle("Xray", {
+    Title = "Xray",
+    Default = false,
+    Callback = function(v)
+        State.Xray = v
+        if not v then setXray(false) end
+    end,
+})
+worldLight:AddParagraph({
+    Title = "Xray",
+    Content = "Makes map/lobby parts translucent. Characters and items stay visible.",
+})
+
+-- Settings
+Tabs.Settings:AddParagraph({ Title = "Menu", Content = "RightControl toggles the GUI." })
+Tabs.Settings:AddButton({
+    Title = "Unload vibeexploits",
+    Description = "Restores all changes and closes the GUI",
+    Callback = function() unload() end,
+})
+Tabs.Settings:AddParagraph({ Title = "Build", Content = "vibeexploits | BEAR* Alpha | Fluent" })
+
+notify("vibeexploits", "Loaded. RightControl toggles the menu.", 5)
+
+--==============================================================
+-- Background loops
+--==============================================================
+task.spawn(function()
+    while Running do
+        pcall(updatePlayerESP)
+        pcall(updateItemESP)
+        task.wait(0.2)
+    end
+end)
+
+task.spawn(function()
+    while Running do
+        local players, items, bears = 0, 0, 0
+        for _ in pairs(espPlayer) do players = players + 1 end
+        for _ in pairs(espItem) do items = items + 1 end
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer and isBear(plr) and isAlive(plr.Character) then
+                bears = bears + 1
+            end
+        end
+        setStatus(UI.espStatus, "Players: " .. players .. " | Bears: " .. bears .. " | Items: " .. items)
+        task.wait(0.5)
+    end
+end)
+
+-- stamina
+task.spawn(function()
+    while Running do
+        if State.InfiniteStamina then
+            local ok, controller = pcall(require, ReplicatedStorage.Client.Game.SurvivorController)
+            if ok and controller and controller.Current then
+                pcall(function()
+                    controller.Current.Value = controller.SprintStats.Stamina.Max
+                    controller.CanSprint = true
+                end)
+            end
+        end
+        task.wait(0.1)
+    end
+end)
+
+-- fly lifecycle
+task.spawn(function()
+    while Running do
+        if State.Fly then
+            local hum = playerHum()
+            if hum and hum.Health > 0 and not flyConn then
+                startFly()
+            end
+        elseif flyConn then
+            stopFly()
+        end
+        task.wait(0.3)
+    end
+end)
+
+-- fullbright / xray refresh
+task.spawn(function()
+    while Running do
+        if State.Fullbright then pcall(setFullbright, true) end
+        if State.Xray then pcall(setXray, true) end
+        task.wait(1.5)
+    end
+end)
+
+-- lobby detection: dead/respawned players are in the lobby even while a round is running
+local function isInLobby()
+    local hum = playerHum()
+    if not hum or hum.Health <= 0 then return true end
+    local team = LocalPlayer.Team
+    if team and team.Name == "Waiting" then return true end
+    if gameState() ~= 5 then return true end
+    local lobby = Workspace:FindFirstChild("Lobby")
+    local root = playerRoot()
+    if lobby and root then
+        local ok, cf, size = pcall(function() return lobby:GetBoundingBox() end)
+        if ok and cf and size then
+            local p = cf:PointToObjectSpace(root.Position)
+            local margin = 40
+            if math.abs(p.X) <= size.X / 2 + margin
+                and math.abs(p.Y) <= size.Y / 2 + margin
+                and math.abs(p.Z) <= size.Z / 2 + margin then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- coin case
+task.spawn(function()
+    while Running do
+        if State.CoinFarm then
+            if isInLobby() then
+                local lobby = Workspace:FindFirstChild("Lobby")
+                local chest = nil
+                if lobby then
+                    local decor = lobby:FindFirstChild("Decor")
+                    chest = decor and decor:FindFirstChild("Chest")
+                    if not chest then chest = lobby:FindFirstChild("Chest", true) end
+                end
+                local detect = chest and chest:FindFirstChild("Detect", true)
+                if detect then
+                    local before = currency("Quidz")
+                    if teleportTo(detect.Position) then
+                        task.wait(0.25)
+                        local after = currency("Quidz")
+                        if after > before then
+                            local gain = after - before
+                            coinFarmed = coinFarmed + gain
+                            setStatus(UI.coin, "Farmed: " .. coinFarmed .. " Quidz | Total: " .. after)
+                            local root = playerRoot()
+                            if root then
+                                pcall(function() root.CFrame = CFrame.new(detect.Position + Vector3.new(0, 12, 0)) end)
+                            end
+                            task.wait(0.6)
+                        else
+                            task.wait(0.35)
+                        end
+                    else
+                        setStatus(UI.coin, "Waiting for respawn in lobby...")
+                        task.wait(0.6)
+                    end
+                else
+                    setStatus(UI.coin, "Waiting for the lobby chest...")
+                    task.wait(1)
+                end
+            else
+                setStatus(UI.coin, "In round - will farm when dead/in lobby.")
+                task.wait(1)
+            end
+        else
+            task.wait(0.5)
+        end
+    end
+end)
+
+-- candy
+task.spawn(function()
+    while Running do
+        if State.CandyFarm then
+            local map = Workspace:FindFirstChild("Map")
+            if gameState() == 5 and map then
+                local before = currency("CandyHalloween")
+                local collected, skipped = 0, 0
+                for _, part in ipairs(CollectionService:GetTagged("OBJ_Collectable")) do
+                    if not State.CandyFarm then break end
+                    if os.clock() < panicUntil then break end
+                    if part:IsA("BasePart") and part.Parent and part.Transparency < 1 and part:IsDescendantOf(map) then
+                        if safeTeleport(part.Position, State.ScanRadius, true) then
+                            if firetouch then
+                                local root = playerRoot()
+                                if root then
+                                    pcall(function()
+                                        firetouch(part, root, 0)
+                                        task.wait(0.03)
+                                        firetouch(part, root, 1)
+                                    end)
+                                end
+                            end
+                            local after = waitForField("CandyHalloween", before, 0.7)
+                            if after > before then
+                                candyFarmed = candyFarmed + (after - before)
+                                before = after
+                                collected = collected + 1
+                            end
+                        else
+                            skipped = skipped + 1
+                        end
+                    end
+                end
+                setStatus(UI.candy, "Farmed: " .. candyFarmed .. " | Sweep: " .. collected .. " | Skipped: " .. skipped .. " | Candy: " .. currency("CandyHalloween"))
+                task.wait(0.8)
+            else
+                setStatus(UI.candy, "Waiting for a map/round...")
+                task.wait(1)
+            end
+        else
+            task.wait(0.5)
+        end
+    end
+end)
+
+-- ghosts: candy ghosts are the Pink/Candy models only
+task.spawn(function()
+    while Running do
+        if State.GhostFarm then
+            if gameState() == 5 then
+                local before = currency("CandyHalloween")
+                local collected, skipped, found = 0, 0, 0
+                for _, ghost in ipairs(CollectionService:GetTagged("OBJ_Ghost")) do
+                    if not State.GhostFarm then break end
+                    if os.clock() < panicUntil then break end
+                    if ghost.Parent and isCandyGhost(ghost) then
+                        found = found + 1
+                        local detect = ghost:FindFirstChild("Detect", true) or (ghost:IsA("BasePart") and ghost)
+                        local pos = detect and detect.Position or (ghost:IsA("Model") and ghost:GetPivot().Position)
+                        if pos and safeTeleport(pos, State.ScanRadius, true) then
+                            if firetouch and detect then
+                                local root = playerRoot()
+                                if root then
+                                    pcall(function()
+                                        firetouch(detect, root, 0)
+                                        task.wait(0.03)
+                                        firetouch(detect, root, 1)
+                                    end)
+                                end
+                            end
+                            local after = waitForField("CandyHalloween", before, 0.8)
+                            if after > before then
+                                ghostFarmed = ghostFarmed + (after - before)
+                                before = after
+                                collected = collected + 1
+                            end
+                        else
+                            skipped = skipped + 1
+                        end
+                    end
+                end
+                if found == 0 then
+                    setStatus(UI.ghost, "No Pink candy ghosts here. Harmful ghosts ignored.")
+                else
+                    setStatus(UI.ghost, "Pink: " .. found .. " | Farmed: " .. ghostFarmed .. " | Sweep: " .. collected .. " | Skipped: " .. skipped)
+                end
+                task.wait(0.8)
+            else
+                setStatus(UI.ghost, "Waiting for a map/round...")
+                task.wait(1)
+            end
+        else
+            task.wait(0.5)
+        end
+    end
+end)
+
+-- scavenger
+local lastScavRedeem = 0
+task.spawn(function()
+    while Running do
+        if State.ScavFarm then
+            local hunt = getActiveHunt()
+            if hunt and PlayerRegistry then
+                local okData, data = pcall(function() return PlayerRegistry.PlayerData.ScavengerHunts[hunt] end)
+                if okData and data then
+                    local progress = data.Progress or {}
+                    local map = Workspace:FindFirstChild("Map")
+                    local inRound = gameState() == 5 and map ~= nil
+                    local function inScope(item)
+                        if inRound then return item:IsDescendantOf(map) end
+                        if map then return not item:IsDescendantOf(map) end
+                        return true
+                    end
+                    for _, item in ipairs(CollectionService:GetTagged("_ScavengerHuntItem")) do
+                        if not State.ScavFarm then break end
+                        if os.clock() < panicUntil then break end
+                        if item:GetAttribute("HuntType") == hunt and inScope(item) then
+                            local name = item.Name
+                            if not table.find(progress, name) then
+                                local pos = item:IsA("Model") and item:GetPivot().Position or item.Position
+                                if safeTeleport(pos + Vector3.new(0, 3, 0), State.ScanRadius, true) then
+                                    task.wait(0.4)
+                                    local cd = item:FindFirstChildOfClass("ClickDetector") or item:FindFirstChild("ClickDetector", true)
+                                    if cd and fireclick then pcall(function() fireclick(cd) end) end
+                                    local deadline = os.clock() + 1.2
+                                    local got = false
+                                    while os.clock() < deadline do
+                                        task.wait(0.15)
+                                        pcall(function()
+                                            progress = PlayerRegistry.PlayerData.ScavengerHunts[hunt].Progress or progress
+                                        end)
+                                        if table.find(progress, name) then
+                                            got = true
+                                            break
+                                        end
+                                    end
+                                    if got then
+                                        scavFound = scavFound + 1
+                                        notify("Skavenge", name .. " collected", 3)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    local db = Database and Database.ScavengerHunts and Database.ScavengerHunts[hunt]
+                    if db and db.List and not data.Finished and os.clock() - lastScavRedeem > 5 then
+                        local all = true
+                        for key in pairs(db.List) do
+                            if not table.find(progress, key) then
+                                all = false
+                                break
+                            end
+                        end
+                        if all then
+                            lastScavRedeem = os.clock()
+                            local rf = Remotes:FindFirstChild("RF/ScavengerHunt_Redeem")
+                            if rf then
+                                local ok, res = pcall(function() return rf:InvokeServer(hunt) end)
+                                if ok and res then
+                                    notify("Skavenge Complete", "Skelebear + Burial unlocked!", 6)
+                                end
+                            end
+                        end
+                    end
+                    setStatus(UI.scav, "Found: " .. scavFound .. " | " .. (#progress > 0 and table.concat(progress, ", ") or "none") .. (data.Finished and " | Redeemed" or ""))
+                end
+            else
+                setStatus(UI.scav, "No active hunt.")
+            end
+            task.wait(1)
+        else
+            task.wait(0.5)
+        end
+    end
+end)
+
+-- community pot
+task.spawn(function()
+    while Running do
+        if State.PotFarm then
+            local pot = potData()
+            local db = Database and Database.CommunityPots and Database.CommunityPots.Hallow26
+            if pot and db then
+                local redeemed = pot.Redeemed or {}
+                local quests = db.Quests or {}
+                local q1 = quests[1]
+                local q1done = false
+                if q1 and q1.ProgressCallback then
+                    local ok, info = pcall(q1.ProgressCallback, pot)
+                    q1done = ok and info and info.Completed or false
+                end
+                if not q1done and not table.find(redeemed, 1) then
+                    local need = math.max(0, 5000 - (pot.Donated or 0))
+                    local candy = currency("CandyHalloween")
+                    if need > 0 and candy > 0 then
+                        local amount = math.min(need, candy)
+                        local rf = Remotes:FindFirstChild("RF/CommunityPot_Contribute")
+                        if rf then
+                            pcall(function() rf:InvokeServer("Hallow26", amount) end)
+                        end
+                    end
+                end
+                for i, quest in ipairs(quests) do
+                    if not table.find(redeemed, i) and quest.ProgressCallback then
+                        local ok, info = pcall(quest.ProgressCallback, pot)
+                        if ok and info and info.Completed then
+                            local rf = Remotes:FindFirstChild("RF/CommunityPot_Redeem")
+                            if rf then
+                                local ok2, res2 = pcall(function() return rf:InvokeServer("Hallow26", i) end)
+                                if ok2 and res2 then
+                                    notify("Community Pot", "Redeemed reward " .. i, 4)
+                                end
+                            end
+                        end
+                    end
+                end
+                setStatus(UI.pot, "Donated: " .. (pot.Donated or 0) .. "/5000 | Candy: " .. currency("CandyHalloween") .. " | Redeemed: " .. #redeemed)
+            else
+                setStatus(UI.pot, "Community pot unavailable.")
+            end
+            task.wait(2)
+        else
+            task.wait(1)
+        end
+    end
+end)
+
+-- auto round (best effort)
+local roundCache = { map = nil, at = 0, clicks = {}, prompts = {} }
+local function refreshRoundCache(map)
+    if roundCache.map == map and os.clock() - roundCache.at < 5 then return end
+    roundCache.map = map
+    roundCache.at = os.clock()
+    table.clear(roundCache.clicks)
+    table.clear(roundCache.prompts)
+    for _, d in ipairs(map:GetDescendants()) do
+        if d:IsA("ClickDetector") then
+            table.insert(roundCache.clicks, d)
+        elseif d:IsA("ProximityPrompt") then
+            table.insert(roundCache.prompts, d)
+        end
+    end
+end
+
+task.spawn(function()
+    while Running do
+        if State.RoundFarm then
+            if gameState() == 5 and isSurvivor(LocalPlayer) then
+                local hum = playerHum()
+                if hum and hum.Health > 0 then
+                    local map = Workspace:FindFirstChild("Map")
+                    if map then
+                        refreshRoundCache(map)
+                        local interactions, blocked = 0, 0
+                        for _, d in ipairs(CollectionService:GetTagged("_SurvivorInteractable")) do
+                            if not State.RoundFarm then break end
+                            if os.clock() < panicUntil then break end
+                            if d:IsA("ClickDetector") and d.Parent and d.Parent:IsA("BasePart") then
+                                if safeTeleport(d.Parent.Position + Vector3.new(0, 2, 0), 30, true) then
+                                    if fireclick then pcall(function() fireclick(d) end) end
+                                    interactions = interactions + 1
+                                else
+                                    blocked = blocked + 1
+                                end
+                                task.wait(0.12)
+                            end
+                        end
+                        for _, d in ipairs(roundCache.clicks) do
+                            if not State.RoundFarm then break end
+                            if os.clock() < panicUntil then break end
+                            if d.Parent and not CollectionService:HasTag(d, "_SurvivorInteractable") then
+                                local parent = d.Parent
+                                local ok = true
+                                if parent:IsA("BasePart") then
+                                    ok = safeTeleport(parent.Position + Vector3.new(0, 2, 0), 30, true)
+                                end
+                                if ok then
+                                    if fireclick then pcall(function() fireclick(d) end) end
+                                    interactions = interactions + 1
+                                else
+                                    blocked = blocked + 1
+                                end
+                                task.wait(0.1)
+                            end
+                        end
+                        for _, d in ipairs(roundCache.prompts) do
+                            if not State.RoundFarm then break end
+                            if os.clock() < panicUntil then break end
+                            local parent = d.Parent
+                            local pos = nil
+                            if parent then
+                                if parent:IsA("BasePart") then
+                                    pos = parent.Position
+                                elseif parent:IsA("Model") then
+                                    local okPivot, pivot = pcall(function() return parent:GetPivot() end)
+                                    if okPivot then pos = pivot.Position end
+                                end
+                            end
+                            if not pos or not hostileNear(pos, 30) then
+                                if fireprompt then pcall(function() fireprompt(d) end) end
+                                interactions = interactions + 1
+                            else
+                                blocked = blocked + 1
+                            end
+                            task.wait(0.1)
+                        end
+                        for _, d in ipairs(map:GetDescendants()) do
+                            if not State.RoundFarm then break end
+                            if os.clock() < panicUntil then break end
+                            if d:IsA("BasePart") and d.Name == "Detect" then
+                                if safeTeleport(d.Position, 30, true) then
+                                    interactions = interactions + 1
+                                else
+                                    blocked = blocked + 1
+                                end
+                                task.wait(0.2)
+                            end
+                        end
+                        local cheese = map:FindFirstChild("Cheese", true)
+                        if cheese and cheese:IsA("BasePart") and os.clock() >= panicUntil then
+                            if safeTeleport(cheese.Position, 30, true) then
+                                task.wait(0.3)
+                            else
+                                blocked = blocked + 1
+                            end
+                        end
+                        for _, name in ipairs({ "CheeseAltar", "Cheese Deposit", "Generator" }) do
+                            if os.clock() < panicUntil then break end
+                            local model = map:FindFirstChild(name, true)
+                            if model then
+                                local detect = model:FindFirstChild("Detect", true)
+                                if detect and detect:IsA("BasePart") then
+                                    if safeTeleport(detect.Position, 30, true) then
+                                        task.wait(0.3)
+                                    else
+                                        blocked = blocked + 1
+                                    end
+                                end
+                            end
+                        end
+                        setStatus(UI.round, "Interactions: " .. interactions .. " | Blocked: " .. blocked .. " | Puzzles: " .. tostring(GameValues.PuzzlesDone.Value) .. "/" .. tostring(GameValues.PuzzlesTotal.Value) .. " | Survivors: " .. tostring(GameValues.SurvivorsLeft.Value))
+                    end
+                else
+                    setStatus(UI.round, "Dead / waiting.")
+                end
+            elseif gameState() == 5 and isBear(LocalPlayer) then
+                setStatus(UI.round, "You are the Bear this round.")
+            else
+                setStatus(UI.round, "Waiting for a round...")
+            end
+            task.wait(0.6)
+        else
+            task.wait(0.5)
+        end
+    end
+end)
+
+--==============================================================
+-- Unload
+--==============================================================
+unload = function()
+    if not Running then return end
+    Running = false
+    pcall(function() setFullbright(false) end)
+    pcall(function() setXray(false) end)
+    pcall(stopFly)
+    pcall(restoreInvisibility)
+    pcall(restoreSpeedConnections)
+    speedWasOn = false
+    speedHumanoid = nil
+    local currentHum = playerHum()
+    if currentHum then pcall(function() currentHum.WalkSpeed = 16 end) end
+    if speedBv then pcall(function() speedBv:Destroy() end); speedBv = nil end
+    pcall(function() RunService:UnbindFromRenderStep("PH_Speed") end)
+    for _, entry in pairs(espPlayer) do pcall(destroyEntry, entry) end
+    for _, entry in pairs(espItem) do pcall(destroyEntry, entry) end
+    table.clear(espPlayer)
+    table.clear(espItem)
+    pcall(function() Window:Destroy() end)
+    getgenv().vibeexploits = nil
+    getgenv().PotentHub = nil
+end
+
+-- debug / external API (also used for live testing)
+local api = {
+    Unload = unload,
+    State = State,
+    Set = function(key, value)
+        State[key] = value
+        if key == "Fullbright" then setFullbright(value) end
+        if key == "Xray" then setXray(value) end
+        if key == "CoinFarm" or key == "CandyFarm" or key == "GhostFarm" or key == "ScavFarm" or key == "RoundFarm" then
+            onFarmStateChanged()
+        end
+    end,
+    Esp = function()
+        updatePlayerESP()
+        updateItemESP()
+    end,
+    Fullbright = setFullbright,
+    Xray = setXray,
+    ClaimR26 = claimR26,
+}
+getgenv().vibeexploits = api
+
+
+
+
